@@ -1,0 +1,361 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates multiple S3 buckets configured for hosting a static website, including dev and tst. Creates cloudfront distributions. Registers domains in Route53.
+Parameters:
+  DomainName:
+    Type: String
+    Description: The DNS name of an existing Amazon Route 53 hosted zone e.g. jevsejev.io
+    AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    ConstraintDescription: must be a valid DNS zone name.
+  LoggingBucket:
+    Type: String
+    Description: The name of an existing S3 bucket to receive logs of activity in other S3 buckets.
+  OriginAccessIdentity:
+    Type: String
+    Description: The ID (not canonical) of the Origin Access Identity.
+    AllowedPattern: "origin-access-identity/cloudfront/.*"
+  OriginAccessIdentityCanonicalId:
+    Type: String
+    Description: The Amazon S3 canonical user ID of an existing Origin Access Identity.
+  AcmCertificateArn:
+    Type: String
+    Description: the Amazon Resource Name (ARN) of an AWS Certificate Manager (ACM) certificate.
+    AllowedPattern: "arn:aws:acm:.*"
+Resources:
+  DomainBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join [ '', [!Ref DomainName] ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref 'LoggingBucket'
+        LogFilePrefix: !Join [ '', [!Ref DomainName, '-S3/'] ]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: false
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: false
+      WebsiteConfiguration:
+        RedirectAllRequestsTo:
+          HostName: !Join [ '', ['www.', !Ref DomainName] ]
+          Protocol: https
+  WwwBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join [ '', ['www.', !Ref DomainName] ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref 'LoggingBucket'
+        LogFilePrefix: !Join [ '', ['www.', !Ref DomainName, '-S3/'] ]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+  DevBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join [ '', ['dev.', !Ref DomainName] ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref 'LoggingBucket'
+        LogFilePrefix: !Join [ '', ['dev.', !Ref DomainName, '-S3/'] ]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+  TstBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    Properties:
+      BucketName: !Join [ '', ['tst.', !Ref DomainName] ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+        - ServerSideEncryptionByDefault:
+            SSEAlgorithm: AES256
+      LoggingConfiguration:
+        DestinationBucketName: !Ref 'LoggingBucket'
+        LogFilePrefix: !Join [ '', ['tst.', !Ref DomainName, '-S3/'] ]
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+  DomainBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    Properties:
+      Bucket: !Ref 'DomainBucket'
+      PolicyDocument:
+        Statement:
+        - Principal:
+            '*'
+          Action: 's3:GetObject'
+          Effect: Allow
+          Resource: !Sub '${DomainBucket.Arn}/*'
+  WwwBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    Properties:
+      Bucket: !Ref 'WwwBucket'
+      PolicyDocument:
+        Statement:
+        - Principal:
+            CanonicalUser: !Ref OriginAccessIdentityCanonicalId
+          Action: 's3:GetObject'
+          Effect: Allow
+          Resource: !Sub '${WwwBucket.Arn}/*'
+  DevBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    Properties:
+      Bucket: !Ref 'DevBucket'
+      PolicyDocument:
+        Statement:
+        - Principal:
+            CanonicalUser: !Ref OriginAccessIdentityCanonicalId
+          Action: 's3:GetObject'
+          Effect: Allow
+          Resource: !Sub '${DevBucket.Arn}/*'
+  TstBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    Properties:
+      Bucket: !Ref 'TstBucket'
+      PolicyDocument:
+        Statement:
+        - Principal:
+            CanonicalUser: !Ref OriginAccessIdentityCanonicalId
+          Action: 's3:GetObject'
+          Effect: Allow
+          Resource: !Sub '${TstBucket.Arn}/*'
+  DomainCloudfront:
+    Type: AWS::CloudFront::Distribution
+    DependsOn:
+    - DomainBucket
+    Properties:
+      DistributionConfig:
+        Comment: !Join [ '', [!Ref DomainName] ]
+        Origins:
+        - DomainName: !Select [2, !Split ["/", !GetAtt DomainBucket.WebsiteURL]]
+          Id: !Select [2, !Split ["/", !GetAtt DomainBucket.WebsiteURL]]
+          CustomOriginConfig:
+            HTTPPort: '80'
+            HTTPSPort: '443'
+            OriginProtocolPolicy: http-only
+        Enabled: true
+        Logging:
+          Bucket: !Join [ '', [!Ref LoggingBucket, '.', 's3.amazonaws.com'] ]
+          Prefix: !Join [ '', [!Ref DomainName, '-CF/'] ]
+        HttpVersion: 'http2'
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 0
+          TargetOriginId: !Select [2, !Split ["/", !GetAtt DomainBucket.WebsiteURL]]
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: allow-all
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        Aliases:
+        - !Join [ '', [!Ref DomainName] ]
+  WwwCloudfront:
+    Type: AWS::CloudFront::Distribution
+    DependsOn:
+    - WwwBucket
+    Properties:
+      DistributionConfig:
+        Comment: !Join [ '', ['www.', !Ref DomainName] ]
+        Origins:
+        - DomainName: !GetAtt WwwBucket.RegionalDomainName
+          Id: !GetAtt WwwBucket.RegionalDomainName
+          S3OriginConfig:
+            OriginAccessIdentity: !Ref OriginAccessIdentity
+        Enabled: true
+        Logging:
+          Bucket: !Join [ '', [!Ref LoggingBucket, '.', 's3.amazonaws.com'] ]
+          Prefix: !Join [ '', ['www.', !Ref DomainName, '-CF/'] ]
+        HttpVersion: 'http2'
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          DefaultTTL: 86400
+          MinTTL: 0
+          MaxTTL: 31536000
+          TargetOriginId: !GetAtt WwwBucket.RegionalDomainName
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        CustomErrorResponses:
+        -  ErrorCode: 403
+           ResponseCode: 404
+           ResponsePagePath: /error.html
+           ErrorCachingMinTTL: 300
+        Aliases:
+        - !Join [ '', ['www.', !Ref DomainName] ]
+  DevCloudfront:
+    Type: AWS::CloudFront::Distribution
+    DependsOn:
+    - DevBucket
+    Properties:
+      DistributionConfig:
+        Comment: !Join [ '', ['dev.', !Ref DomainName] ]
+        Origins:
+        - DomainName: !GetAtt DevBucket.RegionalDomainName
+          Id: !GetAtt DevBucket.RegionalDomainName
+          S3OriginConfig:
+            OriginAccessIdentity: !Ref OriginAccessIdentity
+        Enabled: true
+        Logging:
+          Bucket: !Join [ '', [!Ref LoggingBucket, '.', 's3.amazonaws.com'] ]
+          Prefix: !Join [ '', ['dev.', !Ref DomainName, '-CF/'] ]
+        HttpVersion: 'http2'
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          DefaultTTL: 0
+          MinTTL: 0
+          MaxTTL: 0
+          TargetOriginId: !GetAtt DevBucket.RegionalDomainName
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        CustomErrorResponses:
+        -  ErrorCode: 403
+           ResponseCode: 404
+           ResponsePagePath: /error.html
+           ErrorCachingMinTTL: 300
+        Aliases:
+        - !Join [ '', ['dev.', !Ref DomainName] ]
+  TstCloudfront:
+    Type: AWS::CloudFront::Distribution
+    DependsOn:
+    - TstBucket
+    Properties:
+      DistributionConfig:
+        Comment: !Join [ '', ['tst.', !Ref DomainName] ]
+        Origins:
+        - DomainName: !GetAtt TstBucket.RegionalDomainName
+          Id: !GetAtt TstBucket.RegionalDomainName
+          S3OriginConfig:
+            OriginAccessIdentity: !Ref OriginAccessIdentity
+        Enabled: true
+        Logging:
+          Bucket: !Join [ '', [!Ref LoggingBucket, '.', 's3.amazonaws.com'] ]
+          Prefix: !Join [ '', ['tst.', !Ref DomainName, '-CF/'] ]
+        HttpVersion: 'http2'
+        DefaultRootObject: index.html
+        DefaultCacheBehavior:
+          AllowedMethods:
+          - GET
+          - HEAD
+          Compress: true
+          DefaultTTL: 86400
+          MinTTL: 0
+          MaxTTL: 31536000
+          TargetOriginId: !GetAtt TstBucket.RegionalDomainName
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ViewerProtocolPolicy: redirect-to-https
+        PriceClass: PriceClass_100
+        ViewerCertificate:
+          AcmCertificateArn: !Ref AcmCertificateArn
+          SslSupportMethod: sni-only
+        CustomErrorResponses:
+        -  ErrorCode: 403
+           ResponseCode: 404
+           ResponsePagePath: /error.html
+           ErrorCachingMinTTL: 300
+        Aliases:
+        - !Join [ '', ['tst.', !Ref DomainName] ]
+  DomainCfnAliasRecordSet:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Join [ '', [!Ref DomainName, '.'] ]
+      RecordSets:
+      - Name: !Join [ '', [!Ref DomainName, '.'] ]
+        Type: A
+        AliasTarget:
+          HostedZoneId: Z2FDTNDATAQYW2
+          DNSName: !GetAtt [DomainCloudfront, DomainName]
+  WwwCfnAliasRecordSet:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Join [ '', [!Ref DomainName, '.'] ]
+      RecordSets:
+      - Name: !Join [ '', ['www.', !Ref DomainName, '.'] ]
+        Type: A
+        AliasTarget:
+          HostedZoneId: Z2FDTNDATAQYW2
+          DNSName: !GetAtt [WwwCloudfront, DomainName]
+  DevCfnAliasRecordSet:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Join [ '', [!Ref DomainName, '.'] ]
+      RecordSets:
+      - Name: !Join [ '', ['dev.', !Ref DomainName, '.'] ]
+        Type: A
+        AliasTarget:
+          HostedZoneId: Z2FDTNDATAQYW2
+          DNSName: !GetAtt [DevCloudfront, DomainName]
+  TstCfnAliasRecordSet:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneName: !Join [ '', [!Ref DomainName, '.'] ]
+      RecordSets:
+      - Name: !Join [ '', ['tst.', !Ref DomainName, '.'] ]
+        Type: A
+        AliasTarget:
+          HostedZoneId: Z2FDTNDATAQYW2
+          DNSName: !GetAtt [TstCloudfront, DomainName]
